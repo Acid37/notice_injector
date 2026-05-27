@@ -28,6 +28,32 @@ def _normalize_numeric_id(value: object) -> str | None:
     return text
 
 
+def _resolve_effective_user_id(user_id: object, target_user_id: str | None) -> str | None:
+    """解析并校验最终目标用户ID。"""
+    if target_user_id:
+        return _normalize_numeric_id(target_user_id)
+    return _normalize_numeric_id(user_id)
+
+
+def _is_positive_numeric_id(value: str | None) -> bool:
+    """判断字符串 ID 是否为正整数。"""
+    if not value:
+        return False
+    try:
+        return int(value) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_plugin_enabled(plugin: object) -> bool:
+    """检查插件总开关是否开启。"""
+    config_obj = getattr(plugin, "config", None)
+    plugin_section = getattr(config_obj, "plugin", None)
+    if plugin_section is None:
+        return False
+    return bool(getattr(plugin_section, "enabled", True))
+
+
 async def _resolve_group_id_from_stream(chat_stream: object) -> str | None:
     """从流上下文或流记录中解析群ID（数字）。"""
     # 1) 优先从当前消息 extra 中获取（零 DB 查询）
@@ -74,6 +100,18 @@ class SendGroupPokeAction(BaseAction):
         "插件默认最大次数为3，硬上限为10，超出会自动按上限截断。"
     )
     chat_type = ChatType.GROUP
+
+    async def go_activate(self) -> bool:
+        """仅在群聊且能解析到群号时激活。"""
+        if not _is_plugin_enabled(getattr(self, "plugin", None)):
+            return False
+
+        chat_stream = getattr(self, "chat_stream", None)
+        if str(getattr(chat_stream, "chat_type", "")) != ChatType.GROUP.value:
+            return False
+
+        group_id = await _resolve_group_id_from_stream(chat_stream)
+        return _is_positive_numeric_id(group_id)
 
     async def execute(
         self,
@@ -143,9 +181,9 @@ class SendGroupPokeAction(BaseAction):
                 interval_min_ms, interval_max_ms = interval_max_ms, interval_min_ms
 
             # 确定目标用户
-            effective_user_id = str(target_user_id).strip() if target_user_id else str(user_id).strip()
+            effective_user_id = _resolve_effective_user_id(user_id, target_user_id)
             if not effective_user_id:
-                return False, "目标用户ID为空，操作取消"
+                return False, "目标用户ID无效，操作取消"
 
             # 从上下文解析群ID（不信任 LLM 传入的值）
             effective_group_id = await _resolve_group_id_from_stream(chat_stream) if chat_stream else None
@@ -155,6 +193,8 @@ class SendGroupPokeAction(BaseAction):
                 logger.error(f"群聊戳一戳缺失 group_id: stream_id={getattr(chat_stream, 'stream_id', None)}, "
                              f"current_message={bool(getattr(getattr(chat_stream, 'context', None), 'current_message', None))}")
                 return False, "无法获取群号，该会话可能缺少群信息，请尝试重新触发对话后再戳"
+            if not _is_positive_numeric_id(effective_group_id):
+                return False, "群号无效，操作取消"
 
             # 可选目标校验
             if validate_target_before_poke and validate_target_in_group:
@@ -218,6 +258,14 @@ class SendPrivatePokeAction(BaseAction):
         "插件默认最大次数为3，硬上限为10，超出会自动按上限截断。"
     )
     chat_type = ChatType.PRIVATE
+
+    async def go_activate(self) -> bool:
+        """仅在私聊中激活。"""
+        if not _is_plugin_enabled(getattr(self, "plugin", None)):
+            return False
+
+        chat_stream = getattr(self, "chat_stream", None)
+        return str(getattr(chat_stream, "chat_type", "")) == ChatType.PRIVATE.value
 
     async def execute(
         self,
@@ -286,9 +334,11 @@ class SendPrivatePokeAction(BaseAction):
                 interval_min_ms, interval_max_ms = interval_max_ms, interval_min_ms
 
             # 确定目标用户
-            effective_user_id = str(target_user_id).strip() if target_user_id else str(user_id).strip()
+            effective_user_id = _resolve_effective_user_id(user_id, target_user_id)
             if not effective_user_id:
-                return False, "目标用户ID为空，操作取消"
+                return False, "目标用户ID无效，操作取消"
+            if not _is_positive_numeric_id(effective_user_id):
+                return False, "目标用户ID无效，操作取消"
 
             # 可选目标校验
             if validate_target_before_poke and validate_target_in_private:
@@ -351,6 +401,18 @@ class SendGroupPokeMultipleAction(BaseAction):
     )
     chat_type = ChatType.GROUP
 
+    async def go_activate(self) -> bool:
+        """仅在群聊且能解析到群号时激活。"""
+        if not _is_plugin_enabled(getattr(self, "plugin", None)):
+            return False
+
+        chat_stream = getattr(self, "chat_stream", None)
+        if str(getattr(chat_stream, "chat_type", "")) != ChatType.GROUP.value:
+            return False
+
+        group_id = await _resolve_group_id_from_stream(chat_stream)
+        return _is_positive_numeric_id(group_id)
+
     async def execute(
         self,
         user_ids: list[str],
@@ -405,6 +467,8 @@ class SendGroupPokeMultipleAction(BaseAction):
                 logger.error(f"AOE戳一戳缺失 group_id: stream_id={getattr(chat_stream, 'stream_id', None)}, "
                              f"current_message={bool(getattr(getattr(chat_stream, 'context', None), 'current_message', None))}")
                 return False, "无法获取群号，该会话可能缺少群信息，请尝试重新触发对话后再戳"
+            if not _is_positive_numeric_id(normalized_group_id):
+                return False, "群号无效，操作取消"
 
             # 读取动作参数配置
             adapter_sign = _DEFAULT_ADAPTER_SIGN
