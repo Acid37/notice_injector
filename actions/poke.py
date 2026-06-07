@@ -11,7 +11,7 @@ from src.app.plugin_system.api.log_api import get_logger
 
 logger = get_logger("notice_injector")
 
-_DEFAULT_ADAPTER_SIGN = "napcat_adapter:adapter:napcat_adapter"
+_DEFAULT_ADAPTER_SIGN = "onebot_adapter:adapter:onebot_adapter"
 
 
 # ============================================================================
