@@ -27,6 +27,7 @@ Notice Injector 不一样。它会：
 #### 主动交互，拉近距离
 - **发送戳一戳** — 机器人可以主动戳一戳用户引起注意
 - **AOE 戳一戳** — 机器人可以同时戳多个活跃用户（每人一次）
+- **群文件下载** — 机器人可以下载群内上传的文件并阅读内容
 - **全场景支持** — 所有功能同时支持私聊和群聊
 
 ---
@@ -42,6 +43,7 @@ Notice Injector 通过框架的原生 Action 系统提供交互能力：
 | `send_group_poke`          | 群聊单用户连戳多次        | 仅群聊   | `user_id`(必选), `group_id`(可选), `poke_count`(可选), `target_user_id`(可选), `target_group_id`(可选) |
 | `send_private_poke`        | 私聊单用户连戳多次        | 仅私聊   | `user_id`(必选), `poke_count`(可选), `target_user_id`(可选) |
 | `send_group_poke_multiple` | 群聊多用户各戳一次（AOE） | 仅群聊   | `user_ids`(必选), `group_id`(可选), `max_targets`(可选，默认5), `validate_targets`(可选，默认true) |
+| `download_group_file`      | 下载群文件到本地并返回路径 | 仅群聊   | `file_name`(必选，从上传通知中获取的文件名) |
 
 **架构优化说明**：
 - 戳一戳功能已拆分为群聊和私聊独立 Action，框架会根据 `chat_type` 自动过滤
@@ -73,11 +75,13 @@ notice_injector/
 ├── manifest.json            # 插件元数据
 ├── plugin.py                # 插件入口，注册组件与事件
 ├── config.py                # 配置定义
+├── file_capture.py          # NapCat 文件捕获模块（WebSocket 监听 + HTTP 下载）
 ├── LICENSE                  # MIT 许可证
 ├── README.md                # 插件文档
 └── actions/
     ├── __init__.py          # Actions 模块导出
-    └── poke.py              # 戳一戳动作实现（群聊/私聊/AOE）
+    ├── poke.py              # 戳一戳动作实现（群聊/私聊/AOE）
+    └── download.py          # 群文件下载动作实现
 ```
 
 ---
@@ -98,6 +102,8 @@ notice_injector/
 | `enable_group_upload` | `true` | 是否处理文件上传通知 |
 | `enable_debug` | `false` | 是否输出调试日志 |
 | `ignore_self_notice` | `true` | 是否忽略机器人自己触发的通知 |
+| `enable_file_capture` | `true` | 是否启用群文件捕获服务（连接 NapCat SSE 服务器的 WebSocket） |
+| `napcat_ws_url` | `ws://127.0.0.1:9999` | NapCat SSE 服务器的 WebSocket 地址，需与 NapCat httpSseServers 端口一致 |
 
 
 ## 🎯 戳一戳行为说明
@@ -124,6 +130,21 @@ notice_injector/
 - LLM 应从上下文判断"活跃用户"，建议从最近消息中提取
 - 目标校验默认开启，会过滤无效用户无效用户
 - AOE 戳一戳仅支持群聊
+
+### 群文件下载
+
+`download_group_file` 动作通过直接连接 NapCat SSE 服务器的 WebSocket 端口，独立于 onebot_adapter 捕获群文件上传事件中的 `file_id` 和 `busid`，从而实现文件下载。
+
+**工作原理**：
+- 插件启动时，`FileCapture` 模块会建立一条到 NapCat SSE 服务器的 WebSocket 连接（与现有 onebot_adapter 的连接互不干扰）
+- 当群内有人上传文件时，`FileCapture` 从原始事件中提取 `file_id`、`busid` 等元数据并缓存
+- LLM 决定需要读取文件时，调用 `download_group_file` 动作，传入文件名
+- 动作通过 NapCat WebSocket API 获取临时下载链接，将文件下载到 `data/group_files/` 目录
+- 下载完成后返回本地路径，LLM 可使用 MCP 工具阅读文件内容
+
+**前置要求**：
+- NapCat 的 `httpSseServers` 已启用，且 `enableWebsocket` 为 `true`
+- 配置中的 `napcat_ws_url` 和 `napcat_http_base` 需与 NapCat 的 SSE 服务器端口匹配
 
 ### 推荐配置（低延迟+稳健）
 
@@ -159,6 +180,10 @@ validate_target_before_poke = true
 # 分场景校验开关：推荐群聊开、私聊关
 validate_target_in_group = true
 validate_target_in_private = false
+
+# 群文件捕获（需要 NapCat SSE 服务器已启用 WebSocket）
+enable_file_capture = true
+napcat_ws_url = "ws://127.0.0.1:9999"
 ```
 
 ---

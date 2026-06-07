@@ -34,5 +34,8 @@ class NoticeInjectorConfig(BaseConfig):
         # AOE 戳一戳配置
         aoe_poke_max_targets: int = Field(default=5, description="AOE 戳一戳（send_poke_multiple）的最大目标人数上限。运行时会被限制在 [1, 20]。")
         validate_target_before_aoe_poke: bool = Field(default=True, description="AOE 戳一戳前是否校验目标用户存在。")
+        # 群文件下载（FileCapture）
+        enable_file_capture: bool = Field(default=True, description="是否启用群文件捕获服务。启用后会自动连接 NapCat SSE 服务器的 WebSocket 端口，捕获 group_upload 事件中的 file_id/busid，供 download_group_file 动作使用。")
+        napcat_ws_url: str = Field(default="ws://127.0.0.1:9999", description="NapCat SSE 服务器的 WebSocket 地址。用于捕获群文件上传事件及发送 API 请求（如获取文件下载链接）。需与 NapCat 配置中 httpSseServers 的端口一致。")
 
     plugin: PluginSection = Field(default_factory=PluginSection)

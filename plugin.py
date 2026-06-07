@@ -13,6 +13,8 @@ from src.kernel.event import EventDecision
 
 from .config import NoticeInjectorConfig
 from .actions.poke import SendGroupPokeAction, SendPrivatePokeAction, SendGroupPokeMultipleAction
+from .actions.download import DownloadGroupFileAction
+from .file_capture import FileCapture
 
 logger = get_logger("notice_injector")
 
@@ -182,17 +184,41 @@ class NoticeInjectorPlugin(BasePlugin):
     """NoticeInjector 插件主类"""
 
     plugin_name = "notice_injector"
-    plugin_version = "1.1.2"
+    plugin_version = "1.2.0"
     plugin_author = "NeoFox"
-    plugin_description = "将 QQ 通知消息（如戳一戳、禁言等）转换为标准文本消息。"
+    plugin_description = "将 QQ 通知消息（如戳一戳、禁言等）转换为标准文本消息，并支持群文件下载。"
     configs = [NoticeInjectorConfig]
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.file_capture: FileCapture | None = None
+
     async def on_plugin_loaded(self) -> None:
-        """插件加载时的处理"""
+        """插件加载时的处理：启动 FileCapture 服务。"""
         logger.info("NoticeInjector 插件加载成功")
 
+        config: NoticeInjectorConfig | None = self.config  # type: ignore
+        if config and config.plugin.enabled and config.plugin.enable_file_capture:
+            self.file_capture = FileCapture()
+            try:
+                await self.file_capture.start(config.plugin.napcat_ws_url)
+                logger.info("FileCapture 服务已启动")
+            except Exception as e:
+                logger.error(f"FileCapture 服务启动失败: {e}", exc_info=True)
+                self.file_capture = None
+        else:
+            if config and not config.plugin.enable_file_capture:
+                logger.info("FileCapture 服务被配置禁用，跳过启动")
+
     async def on_plugin_unloaded(self) -> None:
-        """插件卸载时的处理"""
+        """插件卸载时的处理：停止 FileCapture 服务。"""
+        if self.file_capture:
+            try:
+                await self.file_capture.stop()
+                logger.info("FileCapture 服务已停止")
+            except Exception as e:
+                logger.warning(f"FileCapture 服务停止时异常: {e}")
+            self.file_capture = None
         logger.info("NoticeInjector 插件卸载成功")
 
     def get_components(self) -> list[type]:
@@ -201,5 +227,6 @@ class NoticeInjectorPlugin(BasePlugin):
             SendGroupPokeAction,
             SendPrivatePokeAction,
             SendGroupPokeMultipleAction,
+            DownloadGroupFileAction,
             NoticeInjectorEventHandler,
         ]
