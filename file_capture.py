@@ -39,6 +39,8 @@ class FileCapture:
         self._running: bool = False
         # {group_id_str: {file_name: {file_id, busid, name, size, url, timestamp}}}
         self._uploads: dict[str, dict[str, dict]] = {}
+        # {group_id_str: [timestamp, ...]}  最近的闪传时间戳（用于过滤）
+        self._flash_transfers: dict[str, list[float]] = {}
         # WebSocket API 请求响应关联
         self._api_pending: dict[str, asyncio.Future] = {}
 
@@ -47,8 +49,22 @@ class FileCapture:
     # ------------------------------------------------------------------
 
     def _process_event(self, event: dict) -> None:
-        """处理一条 OneBot 事件，提取 group_upload 信息。"""
-        if event.get("post_type") != "notice":
+        """处理一条 OneBot 事件，提取 group_upload 信息，记录闪传。"""
+        post_type = event.get("post_type")
+
+        # 检测闪传：message 事件中包含 flashtransfer 段
+        if post_type == "message":
+            segments = event.get("message")
+            if isinstance(segments, list):
+                for seg in segments:
+                    if seg.get("type") == "flashtransfer":
+                        group_id = str(event.get("group_id", ""))
+                        if group_id:
+                            self._record_flash_transfer(group_id)
+                        return  # 闪传无法下载，只记录不存储
+            return  # message 事件不需要进一步处理
+
+        if post_type != "notice":
             return
         if event.get("notice_type") != "group_upload":
             return
@@ -114,6 +130,29 @@ class FileCapture:
             group_files.values(), key=lambda f: f["timestamp"], reverse=True
         )
         return sorted_files[:limit]
+
+    # ------------------------------------------------------------------
+    # 闪传过滤
+    # ------------------------------------------------------------------
+
+    def _record_flash_transfer(self, group_id: str) -> None:
+        """记录一条闪传时间戳（仅用于过滤，不存储文件信息）。"""
+        if group_id not in self._flash_transfers:
+            self._flash_transfers[group_id] = []
+        timestamps = self._flash_transfers[group_id]
+        timestamps.append(time.time())
+        # 只保留最近 50 条
+        if len(timestamps) > 50:
+            self._flash_transfers[group_id] = timestamps[-50:]
+        logger.info(f"[FileCapture] 记录闪传: 群 {group_id}")
+
+    def has_recent_flash_transfer(self, group_id: str, within_seconds: float = 300) -> bool:
+        """检查指定群在最近 within_seconds 秒内是否有闪传。"""
+        timestamps = self._flash_transfers.get(str(group_id))
+        if not timestamps:
+            return False
+        cutoff = time.time() - within_seconds
+        return any(t > cutoff for t in timestamps)
 
     # ------------------------------------------------------------------
     # NapCat WebSocket API

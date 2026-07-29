@@ -90,8 +90,9 @@ async def _resolve_group_id_from_stream(chat_stream: object) -> str | None:
 class SendGroupPokeAction(BaseAction):
     """在群聊中戳一戳指定用户（支持连续戳）"""
 
-    action_name = "send_group_poke"
-    action_description = (
+    name = "send_group_poke"
+    associated_platforms = ["qq"]
+    description = (
         "在群聊中向指定用户发送戳一戳动作（仅群聊环境可用）。"
         "支持通过 poke_count 指定连续戳一戳次数；"
         "支持通过 target_user_id 显式指定目标（可不等于当前回复对象）；"
@@ -100,6 +101,7 @@ class SendGroupPokeAction(BaseAction):
         "插件默认最大次数为3，硬上限为10，超出会自动按上限截断。"
     )
     chat_type = ChatType.GROUP
+    associated_types = ["text"]
 
     async def go_activate(self) -> bool:
         """仅在群聊且能解析到群号时激活。"""
@@ -249,8 +251,9 @@ class SendGroupPokeAction(BaseAction):
 class SendPrivatePokeAction(BaseAction):
     """在私聊中戳一戳指定用户（支持连续戳）"""
 
-    action_name = "send_private_poke"
-    action_description = (
+    name = "send_private_poke"
+    associated_platforms = ["qq"]
+    description = (
         "在私聊/好友环境中向指定用户发送戳一戳动作（仅私聊环境可用）。"
         "支持通过 poke_count 指定连续戳一戳次数；"
         "支持通过 target_user_id 显式指定目标（可不等于当前回复对象）；"
@@ -258,6 +261,7 @@ class SendPrivatePokeAction(BaseAction):
         "插件默认最大次数为3，硬上限为10，超出会自动按上限截断。"
     )
     chat_type = ChatType.PRIVATE
+    associated_types = ["text"]
 
     async def go_activate(self) -> bool:
         """仅在私聊中激活。"""
@@ -386,8 +390,9 @@ class SendPrivatePokeAction(BaseAction):
 class SendGroupPokeMultipleAction(BaseAction):
     """在群聊中 AOE 戳多个用户"""
 
-    action_name = "send_group_poke_multiple"
-    action_description = (
+    name = "send_group_poke_multiple"
+    associated_platforms = ["qq"]
+    description = (
         "在群聊中戳多个参与互动的用户（仅群聊环境可用）。"
         "与 send_group_poke 为互斥关系，请根据场景选择："
         "- send_group_poke：单用户连戳多次"
@@ -400,6 +405,7 @@ class SendGroupPokeMultipleAction(BaseAction):
         "注意：每人只戳一次，不支持连戳。"
     )
     chat_type = ChatType.GROUP
+    associated_types = ["text"]
 
     async def go_activate(self) -> bool:
         """仅在群聊且能解析到群号时激活。"""

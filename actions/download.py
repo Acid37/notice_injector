@@ -52,8 +52,9 @@ async def _resolve_group_id_from_stream(chat_stream: object) -> str | None:
 class DownloadGroupFileAction(BaseAction):
     """下载群聊中上传的文件到本地，并返回文件路径"""
 
-    action_name = "download_group_file"
-    action_description = (
+    name = "download_group_file"
+    associated_platforms = ["qq"]
+    description = (
         "下载群聊中某人上传的文件到本地，返回保存路径。"
         "当有人上传了文件且你需要阅读其内容时使用此动作。"
         "参数：file_name（必填，从上传通知中获取的文件名）。"
@@ -62,6 +63,7 @@ class DownloadGroupFileAction(BaseAction):
         "获取路径后可使用其他工具读取文件内容。"
     )
     chat_type = ChatType.GROUP
+    associated_types = ["file"]
 
     async def go_activate(self) -> bool:
         """仅在群聊且插件启用且有 file_capture 时激活。"""
@@ -119,6 +121,13 @@ class DownloadGroupFileAction(BaseAction):
                         break
 
             if not file_info:
+                # 如果是闪传，明确告知 LLM 无法下载
+                if file_capture.has_recent_flash_transfer(group_id):
+                    return (
+                        False,
+                        "刚才收到的是闪传文件，闪传无法通过群文件 API 下载。"
+                        "请让对方改用「群文件」功能上传，或直接把文件内容发在聊天里。",
+                    )
                 # 提供最近的上传记录帮助 LLM 纠正文件名
                 recent = file_capture.list_recent(group_id, limit=5)
                 if recent:

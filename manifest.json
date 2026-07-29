@@ -35,6 +35,10 @@
   ],
   "entry_point": "plugin.py",
   "min_core_version": "1.0.0",
+  "api_version": {
+    "adapter_api": "1.0.0",
+    "log_api": "1.0.0"
+  },
   "python_dependencies": [
     "websockets",
     "aiohttp"

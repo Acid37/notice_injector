@@ -10,8 +10,8 @@ from src.core.components.base.config import BaseConfig, Field, SectionBase, conf
 class NoticeInjectorConfig(BaseConfig):
     """Notice Injector 插件配置类"""
 
-    config_name: ClassVar[str] = "config"
-    config_description: ClassVar[str] = "Notice Injector 配置"
+    name: ClassVar[str] = "config"
+    description: ClassVar[str] = "Notice Injector 配置"
 
     @config_section("plugin")
     class PluginSection(SectionBase):
