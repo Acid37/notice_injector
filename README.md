@@ -40,9 +40,9 @@ Notice Injector 通过框架的原生 Action 系统提供交互能力：
 
 | 动作                        | 用途                     | 适用场景 | 参数                                   |
 |----------------------------|--------------------------|----------|----------------------------------------|
-| `send_group_poke`          | 群聊单用户连戳多次        | 仅群聊   | `user_id`(必选), `group_id`(可选), `poke_count`(可选), `target_user_id`(可选), `target_group_id`(可选) |
-| `send_private_poke`        | 私聊单用户连戳多次        | 仅私聊   | `user_id`(必选), `poke_count`(可选), `target_user_id`(可选) |
-| `send_group_poke_multiple` | 群聊多用户各戳一次（AOE） | 仅群聊   | `user_ids`(必选), `group_id`(可选), `max_targets`(可选，默认5), `validate_targets`(可选，默认true) |
+| `send_group_poke`          | 群聊单用户连戳多次        | 仅群聊   | `user_id`(可选，QQ号或昵称), `poke_count`(可选), `target_user_id`(可选，QQ号或昵称) |
+| `send_private_poke`        | 私聊单用户连戳多次        | 仅私聊   | `user_id`(可选，QQ号或昵称), `poke_count`(可选), `target_user_id`(可选，QQ号或昵称) |
+| `send_group_poke_multiple` | 群聊多用户各戳一次（AOE） | 仅群聊   | `user_ids`(必选，QQ号或昵称), `max_targets`(可选，默认5), `validate_targets`(可选，默认true) |
 | `download_group_file`      | 下载群文件到本地并返回路径 | 仅群聊   | `file_name`(必选，从上传通知中获取的文件名) |
 
 **架构优化说明**：
@@ -117,6 +117,7 @@ notice_injector/
 **通用规则**：
 - 次数裁剪：实际连戳次数限制在 `[1, min(max_poke_count, 10)]`
 - 目标优先级：`target_user_id` > `user_id`，`target_group_id` > `group_id` > 上下文推断
+- 目标解析：`user_id`/`target_user_id` 可填 QQ 号或昵称；昵称依次按本地用户库、群成员列表解析，无法唯一确定时直接取消，不执行戳一戳
 - 群聊安全：群聊 Action 缺失 `group_id` 时直接取消，不会降级为私聊
 - 校验策略：
   - 群聊：`validate_target_before_poke=true` 且 `validate_target_in_group=true` 时使用 `get_group_member_info`

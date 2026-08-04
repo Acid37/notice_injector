@@ -32,7 +32,7 @@ class NoticeInjectorConfig(BaseConfig):
         validate_target_in_group: bool = Field(default=True, description="群聊场景是否执行目标校验（建议开启，避免无效成员 ID）。")
         validate_target_in_private: bool = Field(default=False, description="私聊场景是否执行目标校验。默认 false；通常不推荐设为 true（会增加一次额外 API 调用）。")
         # AOE 戳一戳配置
-        aoe_poke_max_targets: int = Field(default=5, description="AOE 戳一戳（send_poke_multiple）的最大目标人数上限。运行时会被限制在 [1, 20]。")
+        aoe_poke_max_targets: int = Field(default=5, description="AOE 戳一戳（send_group_poke_multiple）的最大目标人数上限。运行时会被限制在 [1, 10]。")
         validate_target_before_aoe_poke: bool = Field(default=True, description="AOE 戳一戳前是否校验目标用户存在。")
         # 群文件下载（FileCapture）
         enable_file_capture: bool = Field(default=True, description="是否启用群文件捕获服务。启用后会自动连接 NapCat SSE 服务器的 WebSocket 端口，捕获 group_upload 事件中的 file_id/busid，供 download_group_file 动作使用。")
