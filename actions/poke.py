@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import re
 
 from src.core.components.base import BaseAction
 from src.core.components.types import ChatType
@@ -26,13 +27,6 @@ def _normalize_numeric_id(value: object) -> str | None:
     if not text or not text.isdigit():
         return None
     return text
-
-
-def _resolve_effective_user_id(user_id: object, target_user_id: str | None) -> str | None:
-    """解析并校验最终目标用户ID。"""
-    if target_user_id:
-        return _normalize_numeric_id(target_user_id)
-    return _normalize_numeric_id(user_id)
 
 
 def _is_positive_numeric_id(value: str | None) -> bool:
@@ -83,6 +77,159 @@ async def _resolve_group_id_from_stream(chat_stream: object) -> str | None:
         return None
 
 
+def _normalize_nickname(value: object) -> str | None:
+    """将输入归一化为可查询的目标（去 @ 与首尾空白）。"""
+    if value is None:
+        return None
+    text = str(value).strip().lstrip("@").strip()
+    return text or None
+
+
+async def _resolve_user_id_from_db(platform: str, nickname: str) -> str | None:
+    """通过本地用户库按昵称/群名片解析用户 ID。"""
+    try:
+        from src.app.plugin_system.api.person_api import resolve_user_id
+
+        return await resolve_user_id(platform, nickname)
+    except Exception as e:
+        logger.debug(f"本地库昵称解析失败: nickname={nickname}, error={e}")
+        return None
+
+
+async def _fetch_group_member_list(
+    adapter_manager: object,
+    adapter_sign: str,
+    group_id: str,
+) -> list[dict] | None:
+    """拉取群成员列表；失败时返回 None。"""
+    try:
+        result = await adapter_manager.send_adapter_command(
+            adapter_sign=adapter_sign,
+            command_name="get_group_member_list",
+            command_data={"group_id": group_id},
+            timeout=10.0,
+        )
+        if not isinstance(result, dict) or result.get("status") != "ok":
+            error = result.get("message", "未知错误") if isinstance(result, dict) else result
+            logger.warning(f"获取群成员列表失败: group_id={group_id}, error={error}")
+            return None
+        data = result.get("data")
+        if isinstance(data, list):
+            return [m for m in data if isinstance(m, dict)]
+        if isinstance(data, dict) and isinstance(data.get("data"), list):
+            return [m for m in data["data"] if isinstance(m, dict)]
+        return None
+    except Exception as e:
+        logger.debug(f"获取群成员列表异常: {e}")
+        return None
+
+
+def _match_member_by_name(members: list[dict], nickname: str) -> str | None:
+    """在成员列表中按昵称/群名片匹配，唯一命中才返回 user_id。"""
+    normalized = nickname.lower()
+    exact: list[str] = []
+    for m in members:
+        name = str(m.get("nickname") or "").strip().lower()
+        card = str(m.get("card") or "").strip().lower()
+        if name == normalized or card == normalized:
+            uid = str(m.get("user_id") or "").strip()
+            if uid and uid not in exact:
+                exact.append(uid)
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        return None
+    partial: list[str] = []
+    for m in members:
+        name = str(m.get("nickname") or "").strip().lower()
+        card = str(m.get("card") or "").strip().lower()
+        if normalized in name or normalized in card:
+            uid = str(m.get("user_id") or "").strip()
+            if uid and uid not in partial:
+                partial.append(uid)
+    return partial[0] if len(partial) == 1 else None
+
+
+async def _resolve_target_from_context(chat_stream: object, platform: str) -> str | None:
+    """从当前消息解析目标用户 ID：优先消息中的 @ 对象，私聊回退到发送者。"""
+    context = getattr(chat_stream, "context", None)
+    current_message = getattr(context, "current_message", None)
+    if not current_message:
+        return None
+
+    text = str(
+        getattr(current_message, "processed_plain_text", "")
+        or getattr(current_message, "content", "")
+        or ""
+    )
+    at_ids = re.findall(r"@<[^>]+?:(\d+)>", text)
+    if at_ids:
+        bot_id = ""
+        try:
+            from src.app.plugin_system.api import adapter_api
+
+            bot_info = await adapter_api.get_bot_info_by_platform(platform) or {}
+            bot_id = str(bot_info.get("bot_id") or "")
+        except Exception:
+            bot_id = ""
+        for at_id in at_ids:
+            if at_id != bot_id:
+                return at_id
+
+    chat_type = str(getattr(chat_stream, "chat_type", ""))
+    if chat_type == ChatType.PRIVATE.value:
+        sender_id = str(getattr(current_message, "sender_id", "") or "").strip()
+        if sender_id:
+            return sender_id
+    return None
+
+
+async def _resolve_effective_user_id(
+    *,
+    raw_user_id: object,
+    target_user_id: str | None,
+    platform: str,
+    chat_stream: object,
+    adapter_manager: object,
+    adapter_sign: str,
+    group_id: str | None = None,
+) -> tuple[str | None, str]:
+    """解析最终目标用户 ID。
+
+    解析链：
+    1. 显式数字 ID 直接使用；
+    2. 显式昵称：本地用户库 → 群成员列表（仅群聊可用）；
+    3. 未提供目标：从当前消息上下文解析（@ 对象 / 私聊发送者）；
+    4. 均失败：返回错误说明，不执行戳一戳。
+
+    Returns:
+        (user_id, 错误说明)；成功时错误说明为空。
+    """
+    explicit = target_user_id if target_user_id is not None else raw_user_id
+    nickname = _normalize_nickname(explicit)
+
+    if nickname:
+        if nickname.isdigit():
+            return nickname, ""
+        # 昵称：先本地库，再群成员列表
+        uid = await _resolve_user_id_from_db(platform, nickname)
+        if uid:
+            return uid, ""
+        if group_id:
+            members = await _fetch_group_member_list(adapter_manager, adapter_sign, group_id)
+            if members is not None:
+                uid = _match_member_by_name(members, nickname)
+                if uid:
+                    return uid, ""
+                return None, f"群内未找到唯一匹配“{nickname}”的用户，请提供 QQ 号或更具体的称呼"
+        return None, f"无法解析目标用户“{nickname}”，请提供 QQ 号"
+
+    uid = await _resolve_target_from_context(chat_stream, platform)
+    if uid:
+        return uid, ""
+    return None, "未提供目标用户，且无法从当前消息解析，请明确要戳谁"
+
+
 # ============================================================================
 # 群聊单用户连续戳
 # ============================================================================
@@ -90,16 +237,21 @@ async def _resolve_group_id_from_stream(chat_stream: object) -> str | None:
 class SendGroupPokeAction(BaseAction):
     """在群聊中戳一戳指定用户（支持连续戳）"""
 
-    action_name = "send_group_poke"
-    action_description = (
+    name = "send_group_poke"
+    associated_platforms = ["qq"]
+    description = (
         "在群聊中向指定用户发送戳一戳动作（仅群聊环境可用）。"
         "支持通过 poke_count 指定连续戳一戳次数；"
-        "支持通过 target_user_id 显式指定目标（可不等于当前回复对象）；"
+        "user_id 或 target_user_id 可填目标用户的 QQ 号，也可填昵称/群名片（例如“凉粉”），系统会自动解析；不填时尝试从消息中的 @ 对象解析。"
         "群号会从当前会话上下文自动解析，无需传入。"
         "请结合上下文与提示词决定次数。"
-        "插件默认最大次数为3，硬上限为10，超出会自动按上限截断。"
+        "连戳次数受插件配置 max_poke_count 限制（硬上限 10），超出会自动截断。"
     )
-    chat_type = ChatType.GROUP
+    # chat_type 声明为 ALL：核心静态过滤对非 ALL 的 chat_type 会按传入参数粗筛，
+    # 而 chatter 调用时未透传实际 chat_type（PR #140 后的行为），导致 GROUP/PRIVATE
+    # 动作被静默剔除。真实场景判定由下方 go_activate() 完成（群聊+群号解析）。
+    chat_type = ChatType.ALL
+    associated_types = ["text"]
 
     async def go_activate(self) -> bool:
         """仅在群聊且能解析到群号时激活。"""
@@ -115,7 +267,7 @@ class SendGroupPokeAction(BaseAction):
 
     async def execute(
         self,
-        user_id: str,
+        user_id: str | None = None,
         poke_count: int = 1,
         target_user_id: str | None = None,
         **kwargs,
@@ -123,9 +275,9 @@ class SendGroupPokeAction(BaseAction):
         """执行群聊戳一戳动作
 
         Args:
-            user_id: 要戳的用户ID
+            user_id: 目标用户 QQ 号或昵称（可选，系统会自动解析）
             poke_count: 连续戳一戳次数（默认1，最大10）
-            target_user_id: 可选，显式目标用户ID
+            target_user_id: 可选，显式目标用户（QQ号或昵称）
             **kwargs: 上下文参数
         """
         try:
@@ -180,11 +332,6 @@ class SendGroupPokeAction(BaseAction):
             if interval_min_ms > interval_max_ms:
                 interval_min_ms, interval_max_ms = interval_max_ms, interval_min_ms
 
-            # 确定目标用户
-            effective_user_id = _resolve_effective_user_id(user_id, target_user_id)
-            if not effective_user_id:
-                return False, "目标用户ID无效，操作取消"
-
             # 从上下文解析群ID（不信任 LLM 传入的值）
             effective_group_id = await _resolve_group_id_from_stream(chat_stream) if chat_stream else None
 
@@ -195,6 +342,19 @@ class SendGroupPokeAction(BaseAction):
                 return False, "无法获取群号，该会话可能缺少群信息，请尝试重新触发对话后再戳"
             if not _is_positive_numeric_id(effective_group_id):
                 return False, "群号无效，操作取消"
+
+            # 解析目标用户（QQ号 / 昵称 / 上下文）
+            effective_user_id, resolve_err = await _resolve_effective_user_id(
+                raw_user_id=user_id,
+                target_user_id=target_user_id,
+                platform=str(getattr(chat_stream, "platform", "qq") or "qq"),
+                chat_stream=chat_stream,
+                adapter_manager=adapter_manager,
+                adapter_sign=adapter_sign,
+                group_id=effective_group_id,
+            )
+            if not effective_user_id:
+                return False, resolve_err or "目标用户ID无效，操作取消"
 
             # 可选目标校验
             if validate_target_before_poke and validate_target_in_group:
@@ -249,15 +409,18 @@ class SendGroupPokeAction(BaseAction):
 class SendPrivatePokeAction(BaseAction):
     """在私聊中戳一戳指定用户（支持连续戳）"""
 
-    action_name = "send_private_poke"
-    action_description = (
+    name = "send_private_poke"
+    associated_platforms = ["qq"]
+    description = (
         "在私聊/好友环境中向指定用户发送戳一戳动作（仅私聊环境可用）。"
         "支持通过 poke_count 指定连续戳一戳次数；"
-        "支持通过 target_user_id 显式指定目标（可不等于当前回复对象）；"
+        "user_id 或 target_user_id 可填目标用户的 QQ 号，也可填昵称（系统自动解析）；不填时默认戳当前私聊对象。"
         "请结合上下文与提示词决定次数。"
-        "插件默认最大次数为3，硬上限为10，超出会自动按上限截断。"
+        "连戳次数受插件配置 max_poke_count 限制（硬上限 10），超出会自动截断。"
     )
-    chat_type = ChatType.PRIVATE
+    # chat_type 声明为 ALL：见 SendGroupPokeAction 注释，场景判定由 go_activate() 完成。
+    chat_type = ChatType.ALL
+    associated_types = ["text"]
 
     async def go_activate(self) -> bool:
         """仅在私聊中激活。"""
@@ -269,7 +432,7 @@ class SendPrivatePokeAction(BaseAction):
 
     async def execute(
         self,
-        user_id: str,
+        user_id: str | None = None,
         poke_count: int = 1,
         target_user_id: str | None = None,
         **kwargs,
@@ -277,15 +440,16 @@ class SendPrivatePokeAction(BaseAction):
         """执行私聊戳一戳动作
 
         Args:
-            user_id: 要戳的用户ID
+            user_id: 目标用户 QQ 号或昵称（可选，系统会自动解析）
             poke_count: 连续戳一戳次数（默认1，最大10）
-            target_user_id: 可选，显式目标用户ID
+            target_user_id: 可选，显式目标用户（QQ号或昵称）
             **kwargs: 上下文参数
         """
         try:
             from src.core.managers.adapter_manager import get_adapter_manager
 
             adapter_manager = get_adapter_manager()
+            chat_stream = getattr(self, "chat_stream", None)
 
             # 读取配置
             plugin_obj = getattr(self, "plugin", None)
@@ -333,10 +497,18 @@ class SendPrivatePokeAction(BaseAction):
             if interval_min_ms > interval_max_ms:
                 interval_min_ms, interval_max_ms = interval_max_ms, interval_min_ms
 
-            # 确定目标用户
-            effective_user_id = _resolve_effective_user_id(user_id, target_user_id)
+            # 解析目标用户（QQ号 / 昵称 / 私聊发送者）
+            effective_user_id, resolve_err = await _resolve_effective_user_id(
+                raw_user_id=user_id,
+                target_user_id=target_user_id,
+                platform=str(getattr(chat_stream, "platform", "qq") or "qq") if chat_stream else "qq",
+                chat_stream=chat_stream,
+                adapter_manager=adapter_manager,
+                adapter_sign=adapter_sign,
+                group_id=None,
+            )
             if not effective_user_id:
-                return False, "目标用户ID无效，操作取消"
+                return False, resolve_err or "目标用户ID无效，操作取消"
             if not _is_positive_numeric_id(effective_user_id):
                 return False, "目标用户ID无效，操作取消"
 
@@ -386,20 +558,23 @@ class SendPrivatePokeAction(BaseAction):
 class SendGroupPokeMultipleAction(BaseAction):
     """在群聊中 AOE 戳多个用户"""
 
-    action_name = "send_group_poke_multiple"
-    action_description = (
+    name = "send_group_poke_multiple"
+    associated_platforms = ["qq"]
+    description = (
         "在群聊中戳多个参与互动的用户（仅群聊环境可用）。"
         "与 send_group_poke 为互斥关系，请根据场景选择："
         "- send_group_poke：单用户连戳多次"
         "- send_group_poke_multiple：多用户各戳一次"
         "参数说明："
-        "- user_ids: 目标用户ID列表（必填）。建议从上下文最近有互动的用户中选择。"
+        "- user_ids: 目标用户ID列表（必填），可填 QQ 号或昵称，系统会自动解析。建议从上下文最近有互动的用户中选择。"
         "- max_targets: 最大目标人数上限，默认5，最大10。"
         "- validate_targets: 是否校验目标用户存在，默认true。"
         "群号会从当前会话上下文自动解析，无需传入。"
         "注意：每人只戳一次，不支持连戳。"
     )
-    chat_type = ChatType.GROUP
+    # chat_type 声明为 ALL：见 SendGroupPokeAction 注释，场景判定由 go_activate() 完成。
+    chat_type = ChatType.ALL
+    associated_types = ["text"]
 
     async def go_activate(self) -> bool:
         """仅在群聊且能解析到群号时激活。"""
@@ -415,14 +590,14 @@ class SendGroupPokeMultipleAction(BaseAction):
 
     async def execute(
         self,
-        user_ids: list[str],
+        user_ids: list[str] | None = None,
         max_targets: int | None = None,
         validate_targets: bool | None = None,
     ) -> tuple[bool, str]:
         """执行 AOE 戳一戳动作
 
         Args:
-            user_ids: 目标用户ID列表
+            user_ids: 目标用户ID列表（可填 QQ 号或昵称）
             max_targets: 最大目标人数上限（默认从配置读取）
             validate_targets: 是否校验目标用户存在（默认从配置读取）
         """
@@ -489,44 +664,63 @@ class SendGroupPokeMultipleAction(BaseAction):
             from src.core.managers.adapter_manager import get_adapter_manager
             adapter_manager = get_adapter_manager()
 
-            # 校验目标用户（可选）
+            # 解析并校验目标用户（一次拉取成员列表 + 本地过滤）
+            platform = str(getattr(chat_stream, "platform", "qq") or "qq") if chat_stream else "qq"
+            targets = [(_normalize_nickname(uid), uid) for uid in user_ids]
+            needs_members = validate_targets or any(
+                nickname is not None and not nickname.isdigit() for nickname, _ in targets
+            )
+            members = (
+                await _fetch_group_member_list(adapter_manager, adapter_sign, normalized_group_id)
+                if needs_members
+                else None
+            )
+            member_ids = {str(m.get("user_id") or "") for m in members} if members else None
+
             valid_user_ids: list[str] = []
             invalid_users: list[tuple[str, str]] = []
 
-            if validate_targets:
-                for uid in user_ids:
-                    normalized_uid = _normalize_numeric_id(uid)
-                    if not normalized_uid:
-                        invalid_users.append((uid, "无效ID格式"))
+            for nickname, raw_uid in targets:
+                if not nickname:
+                    invalid_users.append((raw_uid, "无效目标格式"))
+                    continue
+
+                if nickname.isdigit():
+                    resolved = nickname
+                else:
+                    resolved = await _resolve_user_id_from_db(platform, nickname)
+                    if not resolved and members:
+                        resolved = _match_member_by_name(members, nickname)
+                    if not resolved:
+                        invalid_users.append((raw_uid, f"无法解析目标“{nickname}”"))
                         continue
 
-                    result = await adapter_manager.send_adapter_command(
-                        adapter_sign=adapter_sign,
-                        command_name="get_group_member_info",
-                        command_data={
-                            "group_id": normalized_group_id,
-                            "user_id": normalized_uid,
-                            "no_cache": True,
-                        },
-                        timeout=10.0,
-                    )
-
-                    if result.get("status") == "ok":
-                        valid_user_ids.append(normalized_uid)
+                if validate_targets:
+                    if member_ids is not None:
+                        if resolved not in member_ids:
+                            invalid_users.append((raw_uid, "目标不是群成员"))
+                            continue
                     else:
-                        error = result.get("message", "未知错误")
-                        invalid_users.append((uid, error))
+                        result = await adapter_manager.send_adapter_command(
+                            adapter_sign=adapter_sign,
+                            command_name="get_group_member_info",
+                            command_data={
+                                "group_id": normalized_group_id,
+                                "user_id": resolved,
+                                "no_cache": True,
+                            },
+                            timeout=10.0,
+                        )
+                        if result.get("status") != "ok":
+                            error = result.get("message", "未知错误")
+                            invalid_users.append((raw_uid, error))
+                            continue
 
-                if not valid_user_ids:
-                    error_detail = "; ".join([f"{uid}({err})" for uid, err in invalid_users])
-                    return False, f"所有目标用户校验失败: {error_detail}"
-            else:
-                valid_user_ids = [
-                    uid for uid in user_ids
-                    if _normalize_numeric_id(uid)
-                ]
-                if not valid_user_ids:
-                    return False, "目标用户列表中无有效ID"
+                valid_user_ids.append(resolved)
+
+            if not valid_user_ids:
+                error_detail = "; ".join([f"{uid}({err})" for uid, err in invalid_users])
+                return False, f"所有目标用户校验失败: {error_detail}"
 
             # 执行 AOE 戳一戳
             success_users: list[str] = []

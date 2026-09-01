@@ -1,6 +1,6 @@
 {
   "name": "notice_injector",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "处理QQ通知消息（如戳一戳、禁言等），支持主动发送戳一戳交互，并支持群文件下载",
   "author": "可acid,绝世猫猫满月月喵（彩蛋喵）",
   "dependencies": {
@@ -35,6 +35,10 @@
   ],
   "entry_point": "plugin.py",
   "min_core_version": "1.0.0",
+  "api_version": {
+    "adapter_api": "1.0.0",
+    "log_api": "1.0.0"
+  },
   "python_dependencies": [
     "websockets",
     "aiohttp"

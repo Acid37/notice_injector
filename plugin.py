@@ -25,8 +25,8 @@ logger = get_logger("notice_injector")
 class NoticeInjectorEventHandler(BaseEventHandler):
     """Notice 注入事件处理器"""
 
-    handler_name = "notice_injector"
-    handler_description = "将 QQ 通知消息（如戳一戳、禁言等）转换为标准文本消息。"
+    name = "notice_injector"
+    description = "将 QQ 通知消息（如戳一戳、禁言等）转换为标准文本消息。"
 
     # 订阅的事件类型
     init_subscribe = [EventType.ON_RECEIVED_OTHER_MESSAGE]
@@ -185,7 +185,7 @@ class NoticeInjectorPlugin(BasePlugin):
 
     plugin_name = "notice_injector"
     plugin_version = "1.2.0"
-    plugin_author = "NeoFox"
+    plugin_author = "可可"
     plugin_description = "将 QQ 通知消息（如戳一戳、禁言等）转换为标准文本消息，并支持群文件下载。"
     configs = [NoticeInjectorConfig]
 
