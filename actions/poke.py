@@ -210,22 +210,33 @@ async def _resolve_effective_user_id(
 
     if nickname:
         if nickname.isdigit():
+            if not _is_positive_numeric_id(nickname):
+                return None, f"用户ID“{nickname}”无效，必须是正整数 QQ 号"
             return nickname, ""
         # 昵称：先本地库，再群成员列表
         uid = await _resolve_user_id_from_db(platform, nickname)
         if uid:
+            if not _is_positive_numeric_id(uid):
+                logger.warning(f"本地库返回的 user_id 无效: {uid} (昵称={nickname})")
+                return None, f"本地库解析出无效的用户ID“{uid}”，请提供 QQ 号"
             return uid, ""
         if group_id:
             members = await _fetch_group_member_list(adapter_manager, adapter_sign, group_id)
             if members is not None:
                 uid = _match_member_by_name(members, nickname)
                 if uid:
+                    if not _is_positive_numeric_id(uid):
+                        logger.warning(f"群成员匹配返回的 user_id 无效: {uid} (昵称={nickname})")
+                        return None, f"群内匹配到无效的用户ID“{uid}”，请提供 QQ 号"
                     return uid, ""
                 return None, f"群内未找到唯一匹配“{nickname}”的用户，请提供 QQ 号或更具体的称呼"
         return None, f"无法解析目标用户“{nickname}”，请提供 QQ 号"
 
     uid = await _resolve_target_from_context(chat_stream, platform)
     if uid:
+        if not _is_positive_numeric_id(uid):
+            logger.warning(f"上下文解析的 user_id 无效: {uid}")
+            return None, "从当前消息解析出的目标用户ID无效"
         return uid, ""
     return None, "未提供目标用户，且无法从当前消息解析，请明确要戳谁"
 
@@ -686,6 +697,9 @@ class SendGroupPokeMultipleAction(BaseAction):
                     continue
 
                 if nickname.isdigit():
+                    if not _is_positive_numeric_id(nickname):
+                        invalid_users.append((raw_uid, f"用户ID“{nickname}”无效，必须是正整数 QQ 号"))
+                        continue
                     resolved = nickname
                 else:
                     resolved = await _resolve_user_id_from_db(platform, nickname)
@@ -693,6 +707,9 @@ class SendGroupPokeMultipleAction(BaseAction):
                         resolved = _match_member_by_name(members, nickname)
                     if not resolved:
                         invalid_users.append((raw_uid, f"无法解析目标“{nickname}”"))
+                        continue
+                    if not _is_positive_numeric_id(resolved):
+                        invalid_users.append((raw_uid, f"解析出无效的用户ID“{resolved}”"))
                         continue
 
                 if validate_targets:
