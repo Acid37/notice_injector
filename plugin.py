@@ -184,9 +184,6 @@ class NoticeInjectorPlugin(BasePlugin):
     """NoticeInjector 插件主类"""
 
     plugin_name = "notice_injector"
-    plugin_version = "1.2.0"
-    plugin_author = "可可"
-    plugin_description = "将 QQ 通知消息（如戳一戳、禁言等）转换为标准文本消息，并支持群文件下载。"
     configs = [NoticeInjectorConfig]
 
     def __init__(self, *args, **kwargs) -> None:
