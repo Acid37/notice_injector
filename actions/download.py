@@ -62,7 +62,10 @@ class DownloadGroupFileAction(BaseAction):
         "文件会保存到 data/group_files/ 目录下。"
         "获取路径后可使用其他工具读取文件内容。"
     )
-    chat_type = ChatType.GROUP
+    # chat_type 声明为 ALL：核心静态过滤对非 ALL 的 chat_type 会按传入参数粗筛，
+    # 而 chatter 调用时未透传实际 chat_type（PR #140 后的行为），导致 GROUP 动作
+    # 被静默剔除。真实场景判定由下方 go_activate() 完成（群聊+群号+file_capture）。
+    chat_type = ChatType.ALL
     associated_types = ["file"]
 
     async def go_activate(self) -> bool:

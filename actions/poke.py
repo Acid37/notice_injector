@@ -247,7 +247,10 @@ class SendGroupPokeAction(BaseAction):
         "请结合上下文与提示词决定次数。"
         "连戳次数受插件配置 max_poke_count 限制（硬上限 10），超出会自动截断。"
     )
-    chat_type = ChatType.GROUP
+    # chat_type 声明为 ALL：核心静态过滤对非 ALL 的 chat_type 会按传入参数粗筛，
+    # 而 chatter 调用时未透传实际 chat_type（PR #140 后的行为），导致 GROUP/PRIVATE
+    # 动作被静默剔除。真实场景判定由下方 go_activate() 完成（群聊+群号解析）。
+    chat_type = ChatType.ALL
     associated_types = ["text"]
 
     async def go_activate(self) -> bool:
@@ -415,7 +418,8 @@ class SendPrivatePokeAction(BaseAction):
         "请结合上下文与提示词决定次数。"
         "连戳次数受插件配置 max_poke_count 限制（硬上限 10），超出会自动截断。"
     )
-    chat_type = ChatType.PRIVATE
+    # chat_type 声明为 ALL：见 SendGroupPokeAction 注释，场景判定由 go_activate() 完成。
+    chat_type = ChatType.ALL
     associated_types = ["text"]
 
     async def go_activate(self) -> bool:
@@ -568,7 +572,8 @@ class SendGroupPokeMultipleAction(BaseAction):
         "群号会从当前会话上下文自动解析，无需传入。"
         "注意：每人只戳一次，不支持连戳。"
     )
-    chat_type = ChatType.GROUP
+    # chat_type 声明为 ALL：见 SendGroupPokeAction 注释，场景判定由 go_activate() 完成。
+    chat_type = ChatType.ALL
     associated_types = ["text"]
 
     async def go_activate(self) -> bool:
