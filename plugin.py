@@ -222,12 +222,17 @@ class NoticeInjectorPlugin(BasePlugin):
 
     def get_components(self) -> list[type]:
         """获取插件内所有组件类"""
-        return [
+        components: list[type] = [
             SendGroupPokeAction,
             SendPrivatePokeAction,
             SendGroupPokeMultipleAction,
             DownloadGroupFileAction,
-            MediaLookupTool,
-            FetchChatFileTool,
             NoticeInjectorEventHandler,
         ]
+        # Tool 组件不走框架的 go_activate 激活判定（框架仅对 Action/Agent 调用），
+        # 插件禁用时在注册口直接摘除，避免禁用后 Tool schema 仍暴露给 LLM。
+        config: NoticeInjectorConfig | None = getattr(self, "config", None)  # type: ignore[assignment]
+        plugin_section = getattr(config, "plugin", None)
+        if plugin_section is None or getattr(plugin_section, "enabled", True):
+            components.extend([MediaLookupTool, FetchChatFileTool])
+        return components

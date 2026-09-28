@@ -217,9 +217,14 @@ class FetchChatFileTool(BaseTool):
         return None
 
     def _unique_target(self, file_name: str) -> Path:
-        """生成不覆盖既有文件的保存路径（同名加时间戳后缀）。"""
+        """生成不覆盖既有文件的保存路径（同名加毫秒时间戳后缀，仍碰撞则递增序号）。"""
         base = _CHAT_FILE_DIR / Path(file_name).name
         if not base.exists():
             return base
         stem, suffix = base.stem, base.suffix
-        return _CHAT_FILE_DIR / f"{stem}_{int(time.time())}{suffix}"
+        candidate = _CHAT_FILE_DIR / f"{stem}_{int(time.time() * 1000)}{suffix}"
+        n = 1
+        while candidate.exists():
+            candidate = _CHAT_FILE_DIR / f"{stem}_{int(time.time() * 1000)}_{n}{suffix}"
+            n += 1
+        return candidate
