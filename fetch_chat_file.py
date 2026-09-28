@@ -60,7 +60,14 @@ class FetchChatFileTool(BaseTool):
     )
 
     async def go_activate(self) -> bool:
-        """插件启用且 FileCapture 运行中才暴露给 LLM。"""
+        """激活判定（前向兼容保留）。
+
+        注意：当前框架只对 Action/Agent 调用 ``go_activate``（见
+        ``core/managers/action_manager.py`` 与 ``agent_manager.py``），
+        Tool 的筛选走 ``ToolManager.filter_tools`` 的静态过滤，不会调用本方法。
+        插件启停的有效门控在 ``NoticeInjectorPlugin.get_components()``：
+        插件禁用时该 Tool 直接不注册。
+        """
         plugin_obj = getattr(self, "plugin", None)
         config_obj = getattr(plugin_obj, "config", None)
         plugin_section = getattr(config_obj, "plugin", None)
@@ -179,13 +186,14 @@ class FetchChatFileTool(BaseTool):
         import shutil
         import aiohttp
 
-        target = self._unique_target(file_name)
+        target = self._reserve_target(file_name)
+        if target is None:
+            return None
 
         # 1) NapCat 与本机同盘：直接复制本地文件
         if local_path:
             src = Path(local_path)
             if src.is_file():
-                target.parent.mkdir(parents=True, exist_ok=True)
 
                 def _copy() -> None:
                     shutil.copyfile(src, target)
@@ -204,27 +212,51 @@ class FetchChatFileTool(BaseTool):
                     async with session.get(url) as resp:
                         if resp.status != 200:
                             logger.warning(f"下载失败，HTTP {resp.status}")
+                            target.unlink(missing_ok=True)
                             return None
-                        target.parent.mkdir(parents=True, exist_ok=True)
                         with open(target, "wb") as f:
                             async for chunk in resp.content.iter_chunked(8192):
                                 f.write(chunk)
                 return target
             except Exception as e:
                 logger.warning(f"URL 下载失败 ({url[:80]}): {e}")
+                target.unlink(missing_ok=True)
                 return None
 
+        # 两条落盘路径都不可用：释放占位文件，避免留下 0 字节垃圾
+        target.unlink(missing_ok=True)
         return None
 
-    def _unique_target(self, file_name: str) -> Path:
-        """生成不覆盖既有文件的保存路径（同名加毫秒时间戳后缀，仍碰撞则递增序号）。"""
+    def _reserve_target(self, file_name: str) -> Path | None:
+        """原子占位一个不会覆盖既有文件的保存路径。
+
+        用 ``O_EXCL`` 独占创建把「取名」与「占位」合并为一次原子操作：
+        同名文件已存在、或并发调用争抢同一路径时，都会自动退避到下一个
+        候选名（毫秒时间戳 + 递增序号），因此同秒/同毫秒的重复下载不会
+        互相覆盖。占位失败时返回 None。
+        """
         base = _CHAT_FILE_DIR / Path(file_name).name
-        if not base.exists():
-            return base
+        try:
+            _CHAT_FILE_DIR.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.warning(f"创建落盘目录失败 ({_CHAT_FILE_DIR}): {e}")
+            return None
+
         stem, suffix = base.stem, base.suffix
-        candidate = _CHAT_FILE_DIR / f"{stem}_{int(time.time() * 1000)}{suffix}"
-        n = 1
-        while candidate.exists():
-            candidate = _CHAT_FILE_DIR / f"{stem}_{int(time.time() * 1000)}_{n}{suffix}"
-            n += 1
-        return candidate
+        stamp = int(time.time() * 1000)
+        candidates = [base]
+        candidates.extend(
+            _CHAT_FILE_DIR / f"{stem}_{stamp}_{index}{suffix}"
+            for index in range(1, 100)
+        )
+        for candidate in candidates:
+            try:
+                with open(candidate, "xb"):
+                    return candidate
+            except FileExistsError:
+                continue
+            except OSError as e:
+                logger.warning(f"分配落盘路径失败 ({candidate}): {e}")
+                return None
+        logger.warning(f"同名文件过多，无法为 {file_name} 分配落盘路径")
+        return None
