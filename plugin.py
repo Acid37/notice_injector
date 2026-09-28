@@ -14,6 +14,8 @@ from src.kernel.event import EventDecision
 from .config import NoticeInjectorConfig
 from .actions.poke import SendGroupPokeAction, SendPrivatePokeAction, SendGroupPokeMultipleAction
 from .actions.download import DownloadGroupFileAction
+from .media_lookup import MediaLookupTool
+from .fetch_chat_file import FetchChatFileTool
 from .file_capture import FileCapture
 
 logger = get_logger("notice_injector")
@@ -225,5 +227,7 @@ class NoticeInjectorPlugin(BasePlugin):
             SendPrivatePokeAction,
             SendGroupPokeMultipleAction,
             DownloadGroupFileAction,
+            MediaLookupTool,
+            FetchChatFileTool,
             NoticeInjectorEventHandler,
         ]

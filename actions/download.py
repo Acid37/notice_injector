@@ -60,7 +60,8 @@ class DownloadGroupFileAction(BaseAction):
         "参数：file_name（必填，从上传通知中获取的文件名）。"
         "群号会自动从当前会话上下文获取，无需传入。"
         "文件会保存到 data/group_files/ 目录下。"
-        "获取路径后可使用其他工具读取文件内容。"
+        "视频类文件可将返回路径作为 url 传给 analyze_video 分析内容。"
+        "注意：聊天中直接收到的媒体消息（视频/语音）请改用 media_lookup 按 ID 查询。"
     )
     # chat_type 声明为 ALL：核心静态过滤对非 ALL 的 chat_type 会按传入参数粗筛，
     # 而 chatter 调用时未透传实际 chat_type（PR #140 后的行为），导致 GROUP 动作
