@@ -222,12 +222,27 @@ class NoticeInjectorPlugin(BasePlugin):
 
     def get_components(self) -> list[type]:
         """获取插件内所有组件类"""
-        return [
+        components: list[type] = [
             SendGroupPokeAction,
             SendPrivatePokeAction,
             SendGroupPokeMultipleAction,
             DownloadGroupFileAction,
-            MediaLookupTool,
-            FetchChatFileTool,
             NoticeInjectorEventHandler,
         ]
+        # Tool 组件不走框架的 go_activate 激活判定（框架仅对 Action/Agent 调用），
+        # 插件开关必须在注册口落实。配置由框架在实例化时注入（先于组件注册），
+        # 因此这里取不到配置时按「未启用」处理（fail-closed）并留一条告警。
+        config: NoticeInjectorConfig | None = getattr(self, "config", None)  # type: ignore[assignment]
+        plugin_section = getattr(config, "plugin", None)
+        if plugin_section is None:
+            logger.warning("插件配置不可用，跳过 file/media 类 Tool 的注册")
+            return components
+        if not getattr(plugin_section, "enabled", False):
+            return components
+
+        # media_lookup 依赖 MediaManager 已落盘的媒体缓存，与 FileCapture 无关
+        components.append(MediaLookupTool)
+        # fetch_chat_file 走 FileCapture 的 OneBot WS 通道，捕获功能关闭时不注册
+        if getattr(plugin_section, "enable_file_capture", False):
+            components.append(FetchChatFileTool)
+        return components

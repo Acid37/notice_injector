@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 from typing import Annotated
@@ -26,6 +27,33 @@ _CHAT_FILE_DIR = Path("data") / "chat_files"
 
 # 视频扩展名：返回提示中指路 analyze_video
 _VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".flv", ".ts"}
+
+# 文件名中的控制字符（含 NUL）：带 NUL 的路径会让 open() 直接抛 ValueError，
+# 因此落盘前必须先剔除，不能让一个畸形文件名把整次下载打断。
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+# Windows 设备保留名：open(".../CON", "xb") 会打开控制台设备而非普通文件
+_WINDOWS_RESERVED = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
+
+def _safe_basename(file_name: str) -> str:
+    """从原始文件名提取可安全落盘的文件名。
+
+    依次处理：剔除控制字符（NUL 等）、去掉路径分隔符只留末段、
+    Windows 保留设备名加前缀规避；全部失效时回退为 ``file``。
+    """
+    cleaned = _CONTROL_CHARS_RE.sub("", str(file_name or ""))
+    name = Path(cleaned).name.strip()
+    if not name or name in {".", ".."}:
+        return "file"
+    stem = Path(name).stem.upper()
+    if stem in _WINDOWS_RESERVED:
+        name = f"_{name}"
+    return name
 
 
 def _fmt_size(num: object) -> str:
@@ -60,7 +88,14 @@ class FetchChatFileTool(BaseTool):
     )
 
     async def go_activate(self) -> bool:
-        """插件启用且 FileCapture 运行中才暴露给 LLM。"""
+        """激活判定（前向兼容保留）。
+
+        注意：当前框架只对 Action/Agent 调用 ``go_activate``（见
+        ``core/managers/action_manager.py`` 与 ``agent_manager.py``），
+        Tool 的筛选走 ``ToolManager.filter_tools`` 的静态过滤，不会调用本方法。
+        插件启停的有效门控在 ``NoticeInjectorPlugin.get_components()``：
+        插件禁用时该 Tool 直接不注册。
+        """
         plugin_obj = getattr(self, "plugin", None)
         config_obj = getattr(plugin_obj, "config", None)
         plugin_section = getattr(config_obj, "plugin", None)
@@ -174,52 +209,93 @@ class FetchChatFileTool(BaseTool):
     async def _save_file(
         self, local_path: str, url: str, file_name: str
     ) -> Path | None:
-        """把文件落盘到 data/chat_files/。本地路径优先复制，其次 URL 下载。"""
+        """把文件落盘到 data/chat_files/。本地路径优先复制，其次 URL 下载。
+
+        占位文件在落盘成功前一直算「未完成」：任何失败路径与任务取消
+        （``CancelledError`` 不会被下面的 ``except Exception`` 捕获）都会
+        经 ``finally`` 释放占位，避免在磁盘上留下 0 字节垃圾。
+        """
         import asyncio
         import shutil
         import aiohttp
 
-        target = self._unique_target(file_name)
+        target = self._reserve_target(file_name)
+        if target is None:
+            return None
 
-        # 1) NapCat 与本机同盘：直接复制本地文件
-        if local_path:
-            src = Path(local_path)
-            if src.is_file():
-                target.parent.mkdir(parents=True, exist_ok=True)
+        completed = False
+        try:
+            # 1) NapCat 与本机同盘：直接复制本地文件
+            if local_path:
+                src = Path(local_path)
+                if src.is_file():
 
-                def _copy() -> None:
-                    shutil.copyfile(src, target)
+                    def _copy() -> None:
+                        shutil.copyfile(src, target)
 
+                    try:
+                        await asyncio.to_thread(_copy)
+                        completed = True
+                        return target
+                    except OSError as e:
+                        logger.warning(f"复制本地文件失败 ({src}): {e}")
+
+            # 2) URL 下载
+            if url.startswith(("http://", "https://")):
                 try:
-                    await asyncio.to_thread(_copy)
+                    timeout = aiohttp.ClientTimeout(total=300)
+                    async with aiohttp.ClientSession(timeout=timeout) as session:
+                        async with session.get(url) as resp:
+                            if resp.status != 200:
+                                logger.warning(f"下载失败，HTTP {resp.status}")
+                                return None
+                            with open(target, "wb") as f:
+                                async for chunk in resp.content.iter_chunked(8192):
+                                    f.write(chunk)
+                    completed = True
                     return target
-                except OSError as e:
-                    logger.warning(f"复制本地文件失败 ({src}): {e}")
+                except Exception as e:
+                    logger.warning(f"URL 下载失败 ({url[:80]}): {e}")
+                    return None
 
-        # 2) URL 下载
-        if url.startswith(("http://", "https://")):
-            try:
-                timeout = aiohttp.ClientTimeout(total=300)
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.get(url) as resp:
-                        if resp.status != 200:
-                            logger.warning(f"下载失败，HTTP {resp.status}")
-                            return None
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        with open(target, "wb") as f:
-                            async for chunk in resp.content.iter_chunked(8192):
-                                f.write(chunk)
-                return target
-            except Exception as e:
-                logger.warning(f"URL 下载失败 ({url[:80]}): {e}")
-                return None
+            # 两条落盘路径都不可用
+            return None
+        finally:
+            if not completed:
+                target.unlink(missing_ok=True)
 
-        return None
+    def _reserve_target(self, file_name: str) -> Path | None:
+        """原子占位一个不会覆盖既有文件的保存路径。
 
-    def _unique_target(self, file_name: str) -> Path:
-        """生成不覆盖既有文件的保存路径（同名加时间戳后缀）。"""
-        base = _CHAT_FILE_DIR / Path(file_name).name
-        if not base.exists():
-            return base
+        用 ``O_EXCL`` 独占创建把「取名」与「占位」合并为一次原子操作：
+        同名文件已存在、或并发调用争抢同一路径时，都会自动退避到下一个
+        候选名（毫秒时间戳 + 递增序号），因此同秒/同毫秒的重复下载不会
+        互相覆盖。文件名先经 :func:`_safe_basename` 清洗（NUL 等控制字符
+        会让 ``open`` 抛 ``ValueError`` 而非 ``OSError``，必须一并兜住）。
+        占位失败时返回 None。
+        """
+        base = _CHAT_FILE_DIR / _safe_basename(file_name)
+        try:
+            _CHAT_FILE_DIR.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.warning(f"创建落盘目录失败 ({_CHAT_FILE_DIR}): {e}")
+            return None
+
         stem, suffix = base.stem, base.suffix
-        return _CHAT_FILE_DIR / f"{stem}_{int(time.time())}{suffix}"
+        stamp = int(time.time() * 1000)
+        candidates = [base]
+        candidates.extend(
+            _CHAT_FILE_DIR / f"{stem}_{stamp}_{index}{suffix}"
+            for index in range(1, 100)
+        )
+        for candidate in candidates:
+            try:
+                with open(candidate, "xb"):
+                    return candidate
+            except FileExistsError:
+                continue
+            except (OSError, ValueError) as e:
+                logger.warning(f"分配落盘路径失败 ({candidate}): {e}")
+                return None
+        logger.warning(f"同名文件过多，无法为 {file_name} 分配落盘路径")
+        return None
