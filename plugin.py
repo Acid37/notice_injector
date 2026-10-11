@@ -102,8 +102,21 @@ class NoticeInjectorEventHandler(BaseEventHandler):
                 logger.debug(f"通过配置忽略上传通知: {text_description}")
             return EventDecision.SUCCESS, params
 
-        # 4. 检查是否是机器人自己发送的动作（防止自循环）
-        # 优先使用适配器提供的标记，如果没有则回退到简单的逻辑判断
+        # 4. 防止自循环：丢弃机器人自己触发的 notice。
+        # 4a) 硬过滤（无条件生效）：适配器在 notice 缺少 user_id 时曾用 self_id
+        #     兜底成发送者，于是 from_user.user_id 就等于机器人自己。这类事件
+        #     （bot_offline、online_file_receive 等）本不属于任何用户，一旦放行
+        #     就会凭空造出一个「对端是机器人本人」的私聊流，chatter 会往里回消息
+        #     并持续主动发起。这里直接读原始报文的 self_id 做本地比对，不依赖适配器 API。
+        raw_notice = raw.get("raw_message") or {}
+        self_id = str(raw_notice.get("self_id") or "")
+        sender_id = str((msg_info.get("from_user") or {}).get("user_id") or "")
+        if self_id and sender_id and sender_id == self_id:
+            if config.plugin.enable_debug:
+                logger.info(f"忽略机器人自身触发的 notice（self_id={self_id}）: {text_description}")
+            return EventDecision.SUCCESS, params
+
+        # 4b) 配置开关：按操作者 ID 判断，覆盖 poke 等带 operator_id 的通知。
         # 受控于 config.plugin.ignore_self_notice
         if config.plugin.ignore_self_notice:
             is_self = extra.get("self_sent", False)
@@ -167,7 +180,9 @@ class NoticeInjectorEventHandler(BaseEventHandler):
                 # 尝试获取 QQ 平台的 bot 信息
                 bot_info = await adapter_api.get_bot_info_by_platform("qq")
                 if bot_info:
-                    self._bot_id = str(bot_info.get("user_id", ""))
+                    # 适配器返回的键名是 bot_id（见 onebot_adapter.get_bot_info），
+                    # 早期这里误写为 user_id，取到空串后自过滤会静默失效。
+                    self._bot_id = str(bot_info.get("bot_id") or bot_info.get("user_id") or "")
             except Exception as e:
                 logger.warning(f"获取Bot信息失败: {e}")
         
